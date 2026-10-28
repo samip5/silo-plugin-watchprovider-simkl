@@ -72,7 +72,7 @@ func TestScrobbleSendsEpisodeAndMoviePayloads(t *testing.T) {
 	wantEpisode := map[string]any{
 		"progress": float64(1),
 		"show":     map[string]any{"ids": map[string]any{"imdb": "tt0903747", "tvdb": float64(81189)}},
-		"episode":  map[string]any{"season": float64(1), "number": float64(2), "ids": map[string]any{"tvdb": float64(349232)}},
+		"episode":  map[string]any{"season": float64(1), "number": float64(2)},
 	}
 	if !reflect.DeepEqual(start.body, wantEpisode) {
 		t.Fatalf("episode payload = %#v, want %#v", start.body, wantEpisode)
@@ -81,6 +81,111 @@ func TestScrobbleSendsEpisodeAndMoviePayloads(t *testing.T) {
 	wantMovie := map[string]any{"progress": float64(1), "movie": map[string]any{"ids": map[string]any{"imdb": "tt1375666"}}}
 	if pause.path != "/scrobble/pause" || !reflect.DeepEqual(pause.body, wantMovie) {
 		t.Fatalf("pause request = %+v", pause)
+	}
+}
+
+// An episode with only TMDB IDs that Simkl may not map: the title and year
+// give Simkl something to match on, and the episode IDs stay out.
+func TestScrobbleSendsTitlesAndYearsForSimklToFallBackOn(t *testing.T) {
+	server, requests := recordingServer(t, http.StatusCreated, `{}`)
+	episode := &pluginv1.WatchSyncEvent{
+		EventId:         "episode",
+		Operation:       pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_SCROBBLE_STOP,
+		PositionSeconds: 2700,
+		DurationSeconds: 2700,
+		Completed:       true,
+		Media: &pluginv1.WatchSyncMedia{
+			MediaType:         mediaEpisode,
+			Title:             "Pilot",
+			Year:              2003,
+			ExternalIds:       map[string]string{"tmdb": "900001"},
+			SeriesTitle:       " Example Show ",
+			SeriesYear:        2003,
+			SeriesExternalIds: map[string]string{"tmdb": "900002"},
+			SeasonNumber:      1,
+			EpisodeNumber:     1,
+		},
+	}
+	movie := &pluginv1.WatchSyncEvent{
+		EventId:         "movie",
+		Operation:       pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_SCROBBLE_START,
+		DurationSeconds: 6000,
+		Media: &pluginv1.WatchSyncMedia{
+			MediaType: pluginv1.WatchSyncMediaType_WATCH_SYNC_MEDIA_TYPE_MOVIE,
+			Title:     "Inception",
+			Year:      2010,
+		},
+	}
+	applyEvents(t, server, episode, movie)
+	if len(*requests) != 2 {
+		t.Fatalf("requests = %v", *requests)
+	}
+	wantEpisode := map[string]any{
+		"progress": float64(100),
+		"show":     map[string]any{"title": "Example Show", "year": float64(2003), "ids": map[string]any{"tmdb": float64(900002)}},
+		"episode":  map[string]any{"season": float64(1), "number": float64(1)},
+	}
+	if got := (*requests)[0].body; !reflect.DeepEqual(got, wantEpisode) {
+		t.Fatalf("episode payload = %#v, want %#v", got, wantEpisode)
+	}
+	// A movie without IDs leaves the ids object out, so Simkl matches on
+	// title and year rather than on an empty set of IDs.
+	wantMovie := map[string]any{"progress": float64(0), "movie": map[string]any{"title": "Inception", "year": float64(2010)}}
+	if got := (*requests)[1].body; !reflect.DeepEqual(got, wantMovie) {
+		t.Fatalf("movie payload = %#v, want %#v", got, wantMovie)
+	}
+}
+
+func TestScrobbleEpisodeIDsAndTitles(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		season, numbr int32
+		seriesYear    int32
+		wantEpisode   map[string]any
+		wantShow      map[string]any
+	}{
+		{
+			name: "episode number unknown keeps episode ids", season: 1, numbr: 0, seriesYear: 2008,
+			wantEpisode: map[string]any{"season": float64(1), "number": float64(0), "ids": map[string]any{"tvdb": float64(349232)}},
+			wantShow:    map[string]any{"title": "Breaking Bad", "year": float64(2008), "ids": map[string]any{"tvdb": float64(81189)}},
+		},
+		{
+			// Season 0 may be an unknown season, as for absolute-numbered anime.
+			name: "season zero keeps episode ids", season: 0, numbr: 12, seriesYear: 2008,
+			wantEpisode: map[string]any{"season": float64(0), "number": float64(12), "ids": map[string]any{"tvdb": float64(349232)}},
+			wantShow:    map[string]any{"title": "Breaking Bad", "year": float64(2008), "ids": map[string]any{"tvdb": float64(81189)}},
+		},
+		{
+			name: "title without a year is left out", season: 1, numbr: 2, seriesYear: 0,
+			wantEpisode: map[string]any{"season": float64(1), "number": float64(2)},
+			wantShow:    map[string]any{"ids": map[string]any{"tvdb": float64(81189)}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, requests := recordingServer(t, http.StatusCreated, `{}`)
+			event := &pluginv1.WatchSyncEvent{
+				EventId:         "episode",
+				Operation:       pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_SCROBBLE_START,
+				DurationSeconds: 3000,
+				Media: &pluginv1.WatchSyncMedia{
+					MediaType:         mediaEpisode,
+					ExternalIds:       map[string]string{"tvdb": "349232"},
+					SeriesTitle:       "Breaking Bad",
+					SeriesYear:        tc.seriesYear,
+					SeriesExternalIds: map[string]string{"tvdb": "81189"},
+					SeasonNumber:      tc.season,
+					EpisodeNumber:     tc.numbr,
+				},
+			}
+			applyEvents(t, server, event)
+			if len(*requests) != 1 {
+				t.Fatalf("requests = %+v", *requests)
+			}
+			body := (*requests)[0].body
+			if !reflect.DeepEqual(body["episode"], tc.wantEpisode) || !reflect.DeepEqual(body["show"], tc.wantShow) {
+				t.Fatalf("show = %#v episode = %#v, want %#v %#v", body["show"], body["episode"], tc.wantShow, tc.wantEpisode)
+			}
+		})
 	}
 }
 

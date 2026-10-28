@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	pluginv1 "github.com/Silo-Server/silo-plugin-sdk/pkg/pluginproto/silo/plugin/v1"
 )
@@ -49,6 +50,16 @@ func (s *Server) scrobble(ctx context.Context, acct account, event *pluginv1.Wat
 	return applied(event.GetEventId()), nil
 }
 
+// buildScrobblePayload identifies the item the way Simkl's scrobble guide
+// asks: every ID Silo has, plus the title and year. Simkl walks the IDs first
+// and falls back to title and year when none resolves, so an item whose IDs
+// Simkl does not map still scrobbles instead of failing with 404 id_err.
+//
+// An episode is identified by its show plus season and episode number. Simkl
+// treats episode IDs as a last resort, and a stale one fails the whole call
+// with a 404, so they go only when the season or episode number is zero. The
+// contract cannot tell season 0 specials from an unknown season, and an
+// absolute-numbered episode with no season needs its IDs to be found.
 func buildScrobblePayload(event *pluginv1.WatchSyncEvent) (map[string]any, *pluginv1.WatchSyncFault) {
 	media := event.GetMedia()
 	progress := 0.0
@@ -60,16 +71,38 @@ func buildScrobblePayload(event *pluginv1.WatchSyncEvent) (map[string]any, *plug
 	switch media.GetMediaType() {
 	case pluginv1.WatchSyncMediaType_WATCH_SYNC_MEDIA_TYPE_EPISODE:
 		series := media.GetSeriesExternalIds()
-		payload["show"] = map[string]any{"ids": idsFromLocal(series["imdb"], series["tmdb"], series["tvdb"])}
-		payload["episode"] = map[string]any{
+		payload["show"] = scrobbleItem(media.GetSeriesTitle(), media.GetSeriesYear(), idsFromLocal(series["imdb"], series["tmdb"], series["tvdb"]))
+		episode := map[string]any{
 			"season": int(media.GetSeasonNumber()),
 			"number": int(media.GetEpisodeNumber()),
-			"ids":    idsFromLocal(ids["imdb"], ids["tmdb"], ids["tvdb"]),
 		}
+		if media.GetSeasonNumber() <= 0 || media.GetEpisodeNumber() <= 0 {
+			if episodeIDs := idsFromLocal(ids["imdb"], ids["tmdb"], ids["tvdb"]); episodeIDs != (simklIDs{}) {
+				episode["ids"] = episodeIDs
+			}
+		}
+		payload["episode"] = episode
 	case pluginv1.WatchSyncMediaType_WATCH_SYNC_MEDIA_TYPE_MOVIE:
-		payload["movie"] = map[string]any{"ids": idsFromLocal(ids["imdb"], ids["tmdb"], ids["tvdb"])}
+		payload["movie"] = scrobbleItem(media.GetTitle(), media.GetYear(), idsFromLocal(ids["imdb"], ids["tmdb"], ids["tvdb"]))
 	default:
 		return nil, invalidRequestFault("Simkl scrobbles movies and episodes only")
 	}
 	return payload, nil
+}
+
+// scrobbleItem is a movie or show object. Empty fields are left out, so an
+// item without usable IDs is matched on its title and year alone. The title
+// goes only with a year: without one, Simkl falls back to matching the title
+// alone, which can credit a different title of the same name without saying
+// so, and a 404 is the safer outcome.
+func scrobbleItem(title string, year int32, ids simklIDs) map[string]any {
+	item := map[string]any{}
+	if title = strings.TrimSpace(title); title != "" && year > 0 {
+		item["title"] = title
+		item["year"] = int(year)
+	}
+	if ids != (simklIDs{}) {
+		item["ids"] = ids
+	}
+	return item
 }
