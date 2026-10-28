@@ -141,6 +141,7 @@ func TestScrobbleEpisodeIDsAndTitles(t *testing.T) {
 		name          string
 		season, numbr int32
 		seriesYear    int32
+		noSeriesIDs   bool
 		wantEpisode   map[string]any
 		wantShow      map[string]any
 	}{
@@ -160,9 +161,20 @@ func TestScrobbleEpisodeIDsAndTitles(t *testing.T) {
 			wantEpisode: map[string]any{"season": float64(1), "number": float64(2)},
 			wantShow:    map[string]any{"ids": map[string]any{"tvdb": float64(81189)}},
 		},
+		{
+			// The episode IDs are all that identifies an episode of an
+			// unidentifiable show.
+			name: "show without ids, title or year keeps episode ids", season: 1, numbr: 2, seriesYear: 0, noSeriesIDs: true,
+			wantEpisode: map[string]any{"season": float64(1), "number": float64(2), "ids": map[string]any{"tvdb": float64(349232)}},
+			wantShow:    map[string]any{},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server, requests := recordingServer(t, http.StatusCreated, `{}`)
+			seriesIDs := map[string]string{"tvdb": "81189"}
+			if tc.noSeriesIDs {
+				seriesIDs = nil
+			}
 			event := &pluginv1.WatchSyncEvent{
 				EventId:         "episode",
 				Operation:       pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_SCROBBLE_START,
@@ -172,7 +184,7 @@ func TestScrobbleEpisodeIDsAndTitles(t *testing.T) {
 					ExternalIds:       map[string]string{"tvdb": "349232"},
 					SeriesTitle:       "Breaking Bad",
 					SeriesYear:        tc.seriesYear,
-					SeriesExternalIds: map[string]string{"tvdb": "81189"},
+					SeriesExternalIds: seriesIDs,
 					SeasonNumber:      tc.season,
 					EpisodeNumber:     tc.numbr,
 				},

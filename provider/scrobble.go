@@ -57,9 +57,11 @@ func (s *Server) scrobble(ctx context.Context, acct account, event *pluginv1.Wat
 //
 // An episode is identified by its show plus season and episode number. Simkl
 // treats episode IDs as a last resort, and a stale one fails the whole call
-// with a 404, so they go only when the season or episode number is zero. The
-// contract cannot tell season 0 specials from an unknown season, and an
-// absolute-numbered episode with no season needs its IDs to be found.
+// with a 404, so they go only when the episode cannot be placed without them:
+// when the season or episode number is zero, or when the show has neither IDs
+// nor a title and year. The contract cannot tell season 0 specials from an
+// unknown season, and an absolute-numbered episode with no season needs its
+// IDs to be found.
 func buildScrobblePayload(event *pluginv1.WatchSyncEvent) (map[string]any, *pluginv1.WatchSyncFault) {
 	media := event.GetMedia()
 	progress := 0.0
@@ -71,12 +73,13 @@ func buildScrobblePayload(event *pluginv1.WatchSyncEvent) (map[string]any, *plug
 	switch media.GetMediaType() {
 	case pluginv1.WatchSyncMediaType_WATCH_SYNC_MEDIA_TYPE_EPISODE:
 		series := media.GetSeriesExternalIds()
-		payload["show"] = scrobbleItem(media.GetSeriesTitle(), media.GetSeriesYear(), idsFromLocal(series["imdb"], series["tmdb"], series["tvdb"]))
+		show := scrobbleItem(media.GetSeriesTitle(), media.GetSeriesYear(), idsFromLocal(series["imdb"], series["tmdb"], series["tvdb"]))
+		payload["show"] = show
 		episode := map[string]any{
 			"season": int(media.GetSeasonNumber()),
 			"number": int(media.GetEpisodeNumber()),
 		}
-		if media.GetSeasonNumber() <= 0 || media.GetEpisodeNumber() <= 0 {
+		if media.GetSeasonNumber() <= 0 || media.GetEpisodeNumber() <= 0 || len(show) == 0 {
 			if episodeIDs := idsFromLocal(ids["imdb"], ids["tmdb"], ids["tvdb"]); episodeIDs != (simklIDs{}) {
 				episode["ids"] = episodeIDs
 			}
