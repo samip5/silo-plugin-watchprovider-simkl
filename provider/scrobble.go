@@ -55,13 +55,8 @@ func (s *Server) scrobble(ctx context.Context, acct account, event *pluginv1.Wat
 // and falls back to title and year when none resolves, so an item whose IDs
 // Simkl does not map still scrobbles instead of failing with 404 id_err.
 //
-// An episode is identified by its show plus season and episode number. Simkl
-// treats episode IDs as a last resort, and a stale one fails the whole call
-// with a 404, so they go only when the episode cannot be placed without them:
-// when the season or episode number is zero, or when the show has neither IDs
-// nor a title and year. The contract cannot tell season 0 specials from an
-// unknown season, and an absolute-numbered episode with no season needs its
-// IDs to be found.
+// An episode carries its show, its season and episode number, and its own IDs
+// when it has any, as the Jellyfin Simkl plugin sends it.
 func buildScrobblePayload(event *pluginv1.WatchSyncEvent) (map[string]any, *pluginv1.WatchSyncFault) {
 	media := event.GetMedia()
 	progress := 0.0
@@ -73,16 +68,13 @@ func buildScrobblePayload(event *pluginv1.WatchSyncEvent) (map[string]any, *plug
 	switch media.GetMediaType() {
 	case pluginv1.WatchSyncMediaType_WATCH_SYNC_MEDIA_TYPE_EPISODE:
 		series := media.GetSeriesExternalIds()
-		show := scrobbleItem(media.GetSeriesTitle(), media.GetSeriesYear(), idsFromLocal(series["imdb"], series["tmdb"], series["tvdb"]))
-		payload["show"] = show
+		payload["show"] = scrobbleItem(media.GetSeriesTitle(), media.GetSeriesYear(), idsFromLocal(series["imdb"], series["tmdb"], series["tvdb"]))
 		episode := map[string]any{
 			"season": int(media.GetSeasonNumber()),
 			"number": int(media.GetEpisodeNumber()),
 		}
-		if media.GetSeasonNumber() <= 0 || media.GetEpisodeNumber() <= 0 || len(show) == 0 {
-			if episodeIDs := idsFromLocal(ids["imdb"], ids["tmdb"], ids["tvdb"]); episodeIDs != (simklIDs{}) {
-				episode["ids"] = episodeIDs
-			}
+		if episodeIDs := idsFromLocal(ids["imdb"], ids["tmdb"], ids["tvdb"]); episodeIDs != (simklIDs{}) {
+			episode["ids"] = episodeIDs
 		}
 		payload["episode"] = episode
 	case pluginv1.WatchSyncMediaType_WATCH_SYNC_MEDIA_TYPE_MOVIE:
